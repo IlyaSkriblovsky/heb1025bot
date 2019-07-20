@@ -6,8 +6,8 @@ import os
 from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
 
-from plural import plural_ru
-from storage import Storage
+from heb1025bot.plural import plural_ru
+from heb1025bot.storage import Storage
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
@@ -64,7 +64,7 @@ def on_callback(bot: Bot, update: Update):
             schedule_for_delete(bot.send_message(chat_id, callback_data['text']))
         schedule_for_delete(bot.send_message(
             update.effective_chat.id,
-            f'✅ Отправлено {len(chat_ids)} {plural_ru(len(chat_ids), "пользователью", "пользователям", "пользователям")}'
+            f'✅ Отправлено {len(chat_ids)} {plural_ru(len(chat_ids), "пользователю", "пользователям", "пользователям")}'
         ))
 
 

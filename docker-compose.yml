@@ -1,0 +1,12 @@
+version: '2'
+
+services:
+  bot:
+    build: docker/bot
+    command: python -m heb1025bot.main
+    environment:
+      BOT_TOKEN: FILLME FILLME FILLME
+    restart: unless-stopped
+    volumes:
+      - ./heb1025bot:/app/heb1025bot
+      - ./data.sqlite3:/app/data.sqlite3
