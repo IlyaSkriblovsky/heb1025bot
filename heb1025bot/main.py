@@ -62,6 +62,7 @@ def on_callback(bot: Bot, update: Update):
         chat_ids = storage.get_all_chat_ids()
         for chat_id in chat_ids:
             schedule_for_delete(bot.send_message(chat_id, callback_data['text']))
+        bot.answer_callback_query(update.callback_query.id)
         schedule_for_delete(bot.send_message(
             update.effective_chat.id,
             f'✅ Отправлено {len(chat_ids)} {plural_ru(len(chat_ids), "пользователю", "пользователям", "пользователям")}'
