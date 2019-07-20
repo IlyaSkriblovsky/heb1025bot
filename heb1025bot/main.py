@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+from time import sleep
 
 from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
@@ -60,8 +61,10 @@ def on_callback(bot: Bot, update: Update):
 
     elif callback_type == 'send':
         chat_ids = storage.get_all_chat_ids()
-        for chat_id in chat_ids:
+        for i, chat_id in enumerate(chat_ids):
             schedule_for_delete(bot.send_message(chat_id, callback_data['text']))
+            if i % 25 == 0:
+                sleep(1)
         bot.answer_callback_query(update.callback_query.id)
         schedule_for_delete(bot.send_message(
             update.effective_chat.id,
@@ -99,7 +102,7 @@ def error(bot, update, error):
 
 
 def remove_scheduled(bot: Bot, job: Job):
-    scheduled = storage.get_scheduled_for_deleting()
+    scheduled = storage.get_scheduled_for_deleting(25)
     for chat_id, message_id in scheduled:
         bot.delete_message(chat_id, message_id)
     storage.dismiss_scheduled_messages(scheduled)

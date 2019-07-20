@@ -100,9 +100,9 @@ class Storage:
                       'VALUES (?, ?, datetime("now", ?))', (chat_id, message_id, date_modifier))
         self.sq_conn.commit()
 
-    def get_scheduled_for_deleting(self) -> List[Tuple[int, int]]:
+    def get_scheduled_for_deleting(self, limit: int) -> List[Tuple[int, int]]:
         with self.with_cursor() as c:
-            c.execute('SELECT chat_id, message_id FROM msgs_to_delete WHERE delete_at <= datetime("now")')
+            c.execute('SELECT chat_id, message_id FROM msgs_to_delete WHERE delete_at <= datetime("now") LIMIT ?', (limit,))
             return c.fetchall()
 
     def dismiss_scheduled_messages(self, msgs: List[Tuple[int, int]]):
