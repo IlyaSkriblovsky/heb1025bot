@@ -67,19 +67,17 @@ def on_callback(bot: Bot, update: Update):
         bot.edit_message_text('❌ Рассылка отменена', update.effective_chat.id, text_info.confirmation_message_id)
 
     elif callback_type == 'send':
-        chat_ids = storage.get_all_chat_ids()
-        text_id = callback_data['text_id']
-        text_info = storage.load_unconfirmed_text(text_id)
+        text_info = storage.load_unconfirmed_text(callback_data['text_id'])
         if text_info is None:
             schedule_for_delete(bot.send_message(update.effective_chat.id, 'Сообщение уже разослано'))
             return
 
-        storage.save_send_tasks(chat_ids, text_info.text)
+        n_users = storage.save_send_tasks_for_all_users(text_info.text)
 
-        n_users_str = f'{len(chat_ids)} ' + plural_ru(len(chat_ids), 'пользователю', 'пользователям', 'пользователям')
+        n_users_str = f'{n_users} ' + plural_ru(n_users, 'пользователю', 'пользователям', 'пользователям')
         storage.save_send_tasks({update.effective_chat.id}, f'✅ Отправлено {n_users_str}')
 
-        storage.delete_unconfirmed_text(text_id)
+        storage.delete_unconfirmed_text(text_info.id)
         bot.answer_callback_query(update.callback_query.id)
         bot.edit_message_text(f'⌛ Отправка {n_users_str}...', update.effective_chat.id,
                               text_info.confirmation_message_id)

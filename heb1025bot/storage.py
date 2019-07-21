@@ -175,6 +175,12 @@ class Storage:
                           ((chat_id, text) for chat_id in chat_ids))
             self.sq_conn.commit()
 
+    def save_send_tasks_for_all_users(self, text: str) -> int:
+        with self.with_cursor() as c:
+            c.execute('INSERT INTO send_tasks (chat_id, text) SELECT chat_id, ? FROM users', (text,))
+            self.sq_conn.commit()
+            return c.rowcount
+
     def load_send_tasks(self, limit: int) -> List[SendTask]:
         with self.with_cursor() as c:
             c.execute('SELECT id, chat_id, text FROM send_tasks ORDER BY id LIMIT ?', (limit,))
