@@ -126,7 +126,11 @@ def remove_scheduled(bot: Bot, job: Job):
 def send_tasks(bot: Bot, job: Job):
     tasks = storage.load_send_tasks(20)
     for task in tasks:
-        schedule_for_delete(bot.send_message(task.chat_id, task.text))
+        try:
+            schedule_for_delete(bot.send_message(task.chat_id, task.text))
+        except BadRequest as e:
+            logger.exception('Error while sending message')
+            pass
     storage.dismiss_send_tasks(task.task_id for task in tasks)
 
 
