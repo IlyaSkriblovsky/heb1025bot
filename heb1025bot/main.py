@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 storage = Storage()
 
-DEFAULT_TTL = 3 * 60
-PURGE_INTERVAL = 1
+DEFAULT_TTL = 2 * 60 * 60
+PURGE_INTERVAL = 60
 
 
 def schedule_for_delete(msg: Message):
