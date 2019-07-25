@@ -11,7 +11,7 @@ class UnconfirmedText:
     confirmation_message_id: Optional[int]
 
 
-class Storage:
+class UnconfirmedTextsStorage:
     def __init__(self, db: Database):
         self.db = db
 

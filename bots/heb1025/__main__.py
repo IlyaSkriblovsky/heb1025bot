@@ -12,7 +12,7 @@ from bots.db import SerializedDB
 from bots.storage.autodelete import AutoDeleteStorage
 from bots.storage.heb1025_users import Heb1025UsersStorage
 from bots.storage.send_tasks import SendTasksStorage
-from bots.storage.unconfirmed_texts import Storage
+from bots.storage.unconfirmed_texts import UnconfirmedTextsStorage
 from bots.utils.plural import plural_ru
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -24,7 +24,7 @@ db_conn = SerializedDB(sqlite3.connect('./heb1025.sqlite3', check_same_thread=Fa
 auto_delete_storage = AutoDeleteStorage(db_conn, 2 * 60 * 60)
 users_storage = Heb1025UsersStorage(db_conn)
 send_tasks_storage = SendTasksStorage(db_conn)
-unconfirmed_texts_storage = Storage(db_conn)
+unconfirmed_texts_storage = UnconfirmedTextsStorage(db_conn)
 
 PURGE_INTERVAL = 60
 SEND_TASKS_INTERVAL = 2
