@@ -118,7 +118,7 @@ def remove_scheduled(bot: Bot, job: Job):
         try:
             bot.delete_message(msg.chat_id, msg.message_id)
         except BadRequest as e:
-            if e.message != 'Message to delete not found':
+            if e.message not in {'Message to delete not found', "Message can't be deleted"}:
                 raise
     storage.forget_msgs_to_delete(msgs)
 
