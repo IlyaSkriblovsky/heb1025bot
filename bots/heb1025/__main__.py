@@ -7,8 +7,8 @@ from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardB
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
 
-from heb1025bot.plural import plural_ru
-from heb1025bot.storage import Storage, MessageToDelete
+from bots.utils.plural import plural_ru
+from bots.heb1025.storage import Storage, MessageToDelete
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)

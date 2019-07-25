@@ -3,7 +3,7 @@ version: '2'
 services:
   bot:
     build: docker/bot
-    command: python -m heb1025bot.main
+    command: python -m bots.heb1025
     environment:
       BOT_TOKEN: FILLME FILLME FILLME
     restart: unless-stopped
