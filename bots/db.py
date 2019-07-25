@@ -1,5 +1,14 @@
+from abc import ABCMeta, abstractmethod
 from threading import RLock
-from typing import Callable
+from typing import Callable, ContextManager
+
+
+class Database(metaclass=ABCMeta):
+    @abstractmethod
+    def with_cursor(self, *, commit=False) -> ContextManager: ...
+
+    @abstractmethod
+    def commit(self): ...
 
 
 class CursorContext:
@@ -21,7 +30,7 @@ class CursorContext:
         self.lock.release()
 
 
-class SerializedDB:
+class SerializedDB(Database):
     def __init__(self, db_conn):
         self.lock = RLock()
 

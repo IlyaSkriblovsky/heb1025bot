@@ -9,7 +9,10 @@ from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
 
 from bots.db import SerializedDB
-from bots.heb1025.storage import Storage, MessageToDelete
+from bots.storage.autodelete import AutoDeleteStorage
+from bots.storage.heb1025_users import Heb1025UsersStorage
+from bots.storage.send_tasks import SendTasksStorage
+from bots.storage.unconfirmed_texts import Storage
 from bots.utils.plural import plural_ru
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -18,36 +21,33 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 db_conn = SerializedDB(sqlite3.connect('./heb1025.sqlite3', check_same_thread=False))
-storage = Storage(db_conn)
-storage.create_tables()
+auto_delete_storage = AutoDeleteStorage(db_conn, 2 * 60 * 60)
+users_storage = Heb1025UsersStorage(db_conn)
+send_tasks_storage = SendTasksStorage(db_conn)
+unconfirmed_texts_storage = Storage(db_conn)
 
-DEFAULT_TTL = 2 * 60 * 60
 PURGE_INTERVAL = 60
 SEND_TASKS_INTERVAL = 2
 
 
-def schedule_for_delete(msg: Message):
-    storage.schedule_message_to_delete(MessageToDelete(msg.chat_id, msg.message_id), DEFAULT_TTL)
-
-
 def start(bot: Bot, update: Update):
     logger.info('start %s %s', update, type(update))
-    storage.add_user(update.effective_chat.id, update.effective_user.first_name,
-                     update.effective_user.last_name, update.effective_user.username)
+    users_storage.add_user(update.effective_chat.id, update.effective_user.first_name,
+                           update.effective_user.last_name, update.effective_user.username)
     update.message.reply_text('Привет! Я буду присылать вам полезные сообщения время от времени')
 
 
 def ping(bot: Bot, update: Update):
-    schedule_for_delete(update.message.reply_text('pong'))
+    auto_delete_storage.schedule(update.message.reply_text('pong'))
 
 
 def on_text(bot: Bot, update: Update):
-    if not storage.is_admin(update.effective_chat.id):
-        schedule_for_delete(update.message.reply_text('Только администратор может рассылать сообщения'))
+    if not users_storage.is_admin(update.effective_chat.id):
+        auto_delete_storage.schedule(update.message.reply_text('Только администратор может рассылать сообщения'))
         return
 
     text = update.effective_message.text
-    text_id = storage.save_unconfirmed_text(text)
+    text_id = unconfirmed_texts_storage.save_text(text)
 
     confirmation_message: Message = update.message.reply_text(
         f'Подтвердите рассылку\n\n_{text}_', parse_mode=ParseMode.MARKDOWN,
@@ -56,8 +56,8 @@ def on_text(bot: Bot, update: Update):
              InlineKeyboardButton('✅ Отправить', callback_data=json.dumps({'type': 'send', 'text_id': text_id}))]
         ])
     )
-    schedule_for_delete(confirmation_message)
-    storage.save_confirmation_message_id(text_id, confirmation_message.message_id)
+    auto_delete_storage.schedule(confirmation_message)
+    unconfirmed_texts_storage.save_confirmation_message_id(text_id, confirmation_message.message_id)
 
 
 def on_callback(bot: Bot, update: Update):
@@ -65,51 +65,53 @@ def on_callback(bot: Bot, update: Update):
     callback_type = callback_data['type']
 
     if callback_type == 'cancel':
-        text_info = storage.load_unconfirmed_text(callback_data['text_id'])
+        text_info = unconfirmed_texts_storage.load(callback_data['text_id'])
         bot.answer_callback_query(update.callback_query.id)
-        storage.delete_unconfirmed_text(text_info.id)
+        unconfirmed_texts_storage.delete(text_info.id)
         bot.edit_message_text('❌ Рассылка отменена', update.effective_chat.id, text_info.confirmation_message_id)
 
     elif callback_type == 'send':
-        text_info = storage.load_unconfirmed_text(callback_data['text_id'])
+        text_info = unconfirmed_texts_storage.load(callback_data['text_id'])
         if text_info is None:
-            schedule_for_delete(bot.send_message(update.effective_chat.id, 'Сообщение уже разослано'))
+            auto_delete_storage.schedule(bot.send_message(update.effective_chat.id, 'Сообщение уже разослано'))
             return
 
-        n_users = storage.save_send_tasks_for_all_users(text_info.text)
+        chat_ids = users_storage.get_all_chat_ids()
+        n_users = len(chat_ids)
+        send_tasks_storage.save(chat_ids, text_info.text)
 
         n_users_str = f'{n_users} ' + plural_ru(n_users, 'пользователю', 'пользователям', 'пользователям')
-        storage.save_send_tasks({update.effective_chat.id}, f'✅ Отправлено {n_users_str}')
+        send_tasks_storage.save({update.effective_chat.id}, f'✅ Отправлено {n_users_str}')
 
-        storage.delete_unconfirmed_text(text_info.id)
+        unconfirmed_texts_storage.delete(text_info.id)
         bot.answer_callback_query(update.callback_query.id)
         bot.edit_message_text(f'⌛ Отправка {n_users_str}...', update.effective_chat.id,
                               text_info.confirmation_message_id)
 
 
 def is_admin(bot: Bot, update: Update):
-    if storage.is_admin(update.effective_chat.id):
+    if users_storage.is_admin(update.effective_chat.id):
         reply = 'Вы администратор'
     else:
         reply = 'Вы НЕ администратор'
-    schedule_for_delete(update.message.reply_text(reply))
+    auto_delete_storage.schedule(update.message.reply_text(reply))
 
 
 def take_admin(bot: Bot, update: Update):
-    if storage.get_admin_chat_ids():
-        schedule_for_delete(update.message.reply_text('Администраторы уже назначены'))
+    if users_storage.get_admin_chat_ids():
+        auto_delete_storage.schedule(update.message.reply_text('Администраторы уже назначены'))
         return
-    storage.set_is_admin(update.effective_chat.id, True)
-    schedule_for_delete(update.message.reply_text('Теперь вы администратор'))
+    users_storage.set_is_admin(update.effective_chat.id, True)
+    auto_delete_storage.schedule(update.message.reply_text('Теперь вы администратор'))
 
 
 def drop_admin(bot: Bot, update: Update):
-    storage.set_is_admin(update.effective_chat.id, False)
-    schedule_for_delete(update.message.reply_text('Теперь вы НЕ администратор'))
+    users_storage.set_is_admin(update.effective_chat.id, False)
+    auto_delete_storage.schedule(update.message.reply_text('Теперь вы НЕ администратор'))
 
 
 def schedule_remove(bot: Bot, update: Update):
-    schedule_for_delete(update.message)
+    auto_delete_storage.schedule(update.message)
 
 
 def error(bot, update, error):
@@ -117,25 +119,25 @@ def error(bot, update, error):
 
 
 def remove_scheduled(bot: Bot, job: Job):
-    msgs = storage.get_scheduled_for_deleting(25)
+    msgs = auto_delete_storage.get_scheduled(25)
     for msg in msgs:
         try:
             bot.delete_message(msg.chat_id, msg.message_id)
         except BadRequest as e:
             if e.message not in {'Message to delete not found', "Message can't be deleted"}:
                 raise
-    storage.forget_msgs_to_delete(msgs)
+    auto_delete_storage.forget(msgs)
 
 
 def send_tasks(bot: Bot, job: Job):
-    tasks = storage.load_send_tasks(20)
+    tasks = send_tasks_storage.load(20)
     for task in tasks:
         try:
-            schedule_for_delete(bot.send_message(task.chat_id, task.text))
+            auto_delete_storage.schedule(bot.send_message(task.chat_id, task.text))
         except BadRequest as e:
             logger.exception('Error while sending message')
             pass
-    storage.dismiss_send_tasks(task.task_id for task in tasks)
+    send_tasks_storage.dismiss(task.task_id for task in tasks)
 
 
 OBSERVE_FOR_REMOVE = 1
