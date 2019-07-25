@@ -9,4 +9,4 @@ services:
     restart: unless-stopped
     volumes:
       - ./heb1025bot:/app/heb1025bot
-      - ./data.sqlite3:/app/data.sqlite3
+      - ./heb1025.sqlite3:/app/heb1025.sqlite3

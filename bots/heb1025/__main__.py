@@ -2,20 +2,24 @@
 import json
 import logging
 import os
+import sqlite3
 
 from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
 
-from bots.utils.plural import plural_ru
+from bots.db import SerializedDB
 from bots.heb1025.storage import Storage, MessageToDelete
+from bots.utils.plural import plural_ru
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
-storage = Storage()
+db_conn = SerializedDB(sqlite3.connect('./heb1025.sqlite3', check_same_thread=False))
+storage = Storage(db_conn)
+storage.create_tables()
 
 DEFAULT_TTL = 2 * 60 * 60
 PURGE_INTERVAL = 60
@@ -136,27 +140,26 @@ def send_tasks(bot: Bot, job: Job):
 
 OBSERVE_FOR_REMOVE = 1
 
-if __name__ == '__main__':
-    updater = Updater(os.environ['BOT_TOKEN'])
+updater = Updater(os.environ['BOT_TOKEN'])
 
-    dp = updater.dispatcher
+dp = updater.dispatcher
 
-    dp.add_handler(CommandHandler('start', start))
-    dp.add_handler(CommandHandler('ping', ping))
-    dp.add_handler(CommandHandler('is_admin', is_admin))
-    dp.add_handler(CommandHandler('take_admin', take_admin))
-    dp.add_handler(CommandHandler('drop_admin', drop_admin))
+dp.add_handler(CommandHandler('start', start))
+dp.add_handler(CommandHandler('ping', ping))
+dp.add_handler(CommandHandler('is_admin', is_admin))
+dp.add_handler(CommandHandler('take_admin', take_admin))
+dp.add_handler(CommandHandler('drop_admin', drop_admin))
 
-    dp.add_handler(MessageHandler(Filters.text, on_text))
-    dp.add_handler(CallbackQueryHandler(on_callback))
+dp.add_handler(MessageHandler(Filters.text, on_text))
+dp.add_handler(CallbackQueryHandler(on_callback))
 
-    dp.add_handler(MessageHandler(Filters.all, schedule_remove), group=OBSERVE_FOR_REMOVE)
+dp.add_handler(MessageHandler(Filters.all, schedule_remove), group=OBSERVE_FOR_REMOVE)
 
-    updater.job_queue.run_repeating(remove_scheduled, PURGE_INTERVAL)
-    updater.job_queue.run_repeating(send_tasks, SEND_TASKS_INTERVAL)
+updater.job_queue.run_repeating(remove_scheduled, PURGE_INTERVAL)
+updater.job_queue.run_repeating(send_tasks, SEND_TASKS_INTERVAL)
 
-    dp.add_error_handler(error)
+dp.add_error_handler(error)
 
-    updater.start_polling()
+updater.start_polling()
 
-    updater.idle()
+updater.idle()
