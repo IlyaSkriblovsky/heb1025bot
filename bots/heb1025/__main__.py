@@ -119,7 +119,12 @@ def format_user(user: User) -> str:
         return ' '.join(parts)
     return f'<#{user.chat_id}>'
 
+
 def list_users(bot: Bot, update: Update):
+    if not users_storage.is_admin(update.effective_chat.id):
+        auto_delete_storage.schedule(update.message.reply_text('Только администратор может видеть список пользователей'))
+        return
+
     lines = []
     for no, user in enumerate(users_storage.get_all_users(), 1):
         lines.append(f'{no}. {format_user(user)}')
