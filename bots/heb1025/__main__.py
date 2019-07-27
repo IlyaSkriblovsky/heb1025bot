@@ -10,7 +10,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, 
 
 from bots.db import SerializedDB
 from bots.storage.autodelete import AutoDeleteStorage
-from bots.storage.heb1025_users import Heb1025UsersStorage
+from bots.storage.heb1025_users import Heb1025UsersStorage, User
 from bots.storage.send_tasks import SendTasksStorage
 from bots.storage.unconfirmed_texts import UnconfirmedTextsStorage
 from bots.utils.plural import plural_ru
@@ -110,6 +110,21 @@ def drop_admin(bot: Bot, update: Update):
     auto_delete_storage.schedule(update.message.reply_text('Теперь вы НЕ администратор'))
 
 
+def format_user(user: User) -> str:
+    username = None
+    if user.username is not None:
+        username = '@' + user.username
+    parts = [x for x in [user.first_name, user.last_name, username] if x is not None]
+    if parts:
+        return ' '.join(parts)
+    return f'<#{user.chat_id}>'
+
+def list_users(bot: Bot, update: Update):
+    lines = []
+    for no, user in enumerate(users_storage.get_all_users(), 1):
+        lines.append(f'{no}. {format_user(user)}')
+    update.message.reply_text('\n'.join(lines))
+
 def schedule_remove(bot: Bot, update: Update):
     auto_delete_storage.schedule(update.message)
 
@@ -151,6 +166,7 @@ dp.add_handler(CommandHandler('ping', ping))
 dp.add_handler(CommandHandler('is_admin', is_admin))
 dp.add_handler(CommandHandler('take_admin', take_admin))
 dp.add_handler(CommandHandler('drop_admin', drop_admin))
+dp.add_handler(CommandHandler('list_users', list_users))
 
 dp.add_handler(MessageHandler(Filters.text, on_text))
 dp.add_handler(CallbackQueryHandler(on_callback))

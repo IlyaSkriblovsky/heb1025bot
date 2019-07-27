@@ -1,6 +1,16 @@
-from typing import Set
+from dataclasses import dataclass
+from typing import Set, List
 
 from bots.db import Database
+
+
+@dataclass
+class User:
+    chat_id: int
+    first_name: str
+    last_name: str
+    username: str
+    is_admin: bool
 
 
 class Heb1025UsersStorage:
@@ -45,3 +55,14 @@ class Heb1025UsersStorage:
     def set_is_admin(self, chat_id: int, is_admin: bool):
         with self.db.with_cursor(commit=True) as c:
             c.execute('UPDATE users SET is_admin=? WHERE chat_id=?', (int(is_admin), chat_id))
+
+    def get_all_users(self) -> List[User]:
+        with self.db.with_cursor() as c:
+            return [
+                User(*row[0:4], bool(row[4]))
+                for row in c.execute('''
+                    SELECT chat_id, first_name, last_name, username, is_admin
+                    FROM users
+                    ORDER BY start_time
+                ''')
+            ]
