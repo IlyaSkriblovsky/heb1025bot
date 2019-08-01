@@ -1,12 +1,22 @@
 version: '2'
 
 services:
-  bot:
+  heb1025:
     build: docker/bot
     command: python -m bots.heb1025
     environment:
       BOT_TOKEN: FILLME FILLME FILLME
     restart: unless-stopped
     volumes:
-      - ./heb1025bot:/app/heb1025bot
+      - ./bots:/app/bots
       - ./heb1025.sqlite3:/app/heb1025.sqlite3
+
+  pr1303:
+    build: docker/bot
+    command: python -m bots.pr1303
+    environment:
+      BOT_TOKEN: FILLME FILLME FILLME
+    restart: unless-stopped
+    volumes:
+      - ./bots:/app/bots
+      - ./pr1303.sqlite3:/app/pr1303.sqlite3
