@@ -4,6 +4,7 @@ from typing import Set, List, Iterable, Tuple
 
 from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
 from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
+from telegram.utils.helpers import escape_markdown
 
 from bots.aspects.autodelete import AutoDeleteStorage
 from bots.aspects.common import ChatAndMessageId
@@ -18,14 +19,11 @@ class User:
     username: str
     is_admin: bool
 
-    def as_string(self) -> str:
-        username = None
-        if self.username is not None:
-            username = '@' + self.username
-        parts = [x for x in [self.first_name, self.last_name, username] if x is not None]
-        if parts:
-            return ' '.join(parts)
-        return f'<#{self.chat_id}>'
+    def as_markdown_link(self) -> str:
+        full_name = self.first_name
+        if self.last_name:
+            full_name += ' ' + self.last_name
+        return f'[{escape_markdown(full_name)}](tg://user?id={self.chat_id})'
 
 
 @dataclass
@@ -187,6 +185,8 @@ class UsersBehavior:
                 update.message.reply_text(self.admin_greeting, parse_mode=ParseMode.MARKDOWN),
                 ttl=self.admin_requests_ttl
             )
+        elif update.effective_chat.id in existing_admins:
+            self.auto_delete_storage.schedule(update.message.reply_text('Вы уже администратор'))
         else:
             request_text = f'{update.effective_user.mention_markdown()} хочет стать администратором'
             request = self.users_storage.create_admin_request(update.effective_chat.id, request_text)
@@ -254,7 +254,10 @@ class UsersBehavior:
                 update.message.reply_text('Только администратор может видеть список пользователей'))
             return
 
+        admins = self.users_storage.get_admin_chat_ids()
+
         lines = []
         for no, user in enumerate(self.users_storage.get_all_users(), 1):
-            lines.append(f'{no}. {user.as_string()}')
-        self.auto_delete_storage.schedule(update.message.reply_text('\n'.join(lines)))
+            suffix = ' \U0001f511' if user.chat_id in admins else ''
+            lines.append(f'{no}. {user.as_markdown_link()}{suffix}')
+        self.auto_delete_storage.schedule(update.message.reply_text('\n'.join(lines), parse_mode=ParseMode.MARKDOWN))

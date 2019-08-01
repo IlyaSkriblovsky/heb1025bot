@@ -5,6 +5,7 @@ import sqlite3
 
 from telegram import Bot, Update, ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram.utils.helpers import escape_markdown
 
 from bots.aspects.autodelete import (AutoDeleteStorage, install_all_inbound_messages_for_delete,
                                      install_remove_scheduled_job)
@@ -31,7 +32,7 @@ def start(bot: Bot, update: Update):
 
 
 def on_text(bot: Bot, update: Update):
-    user_text = update.message.text.replace('`', '')
+    user_text = escape_markdown(update.message.text)
     text_to_send = f'✉️ от {update.effective_user.mention_markdown()}\n\n`{user_text}`'
 
     for chat_id in users_storage.get_admin_chat_ids():
