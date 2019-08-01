@@ -8,11 +8,13 @@ from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardB
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
 
+from bots.aspects.autodelete import (AutoDeleteStorage, install_all_inbound_messages_for_delete,
+                                     install_remove_scheduled_job)
+from bots.aspects.users import UsersStorage, UsersBehavior
 from bots.db import SerializedDB
-from bots.storage.autodelete import AutoDeleteStorage
-from bots.storage.heb1025_users import Heb1025UsersStorage, User
-from bots.storage.send_tasks import SendTasksStorage
-from bots.storage.unconfirmed_texts import UnconfirmedTextsStorage
+from bots.aspects.send_tasks import SendTasksStorage
+from bots.aspects.unconfirmed_texts import UnconfirmedTextsStorage
+from bots.utils.bot_utils import create_ping
 from bots.utils.plural import plural_ru
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -22,23 +24,17 @@ logger = logging.getLogger(__name__)
 
 db_conn = SerializedDB(sqlite3.connect('./heb1025.sqlite3', check_same_thread=False))
 auto_delete_storage = AutoDeleteStorage(db_conn, 2 * 60 * 60)
-users_storage = Heb1025UsersStorage(db_conn)
+users_storage = UsersStorage(db_conn)
 send_tasks_storage = SendTasksStorage(db_conn)
 unconfirmed_texts_storage = UnconfirmedTextsStorage(db_conn)
 
-PURGE_INTERVAL = 60
 SEND_TASKS_INTERVAL = 2
 
 
 def start(bot: Bot, update: Update):
-    logger.info('start %s %s', update, type(update))
     users_storage.add_user(update.effective_chat.id, update.effective_user.first_name,
                            update.effective_user.last_name, update.effective_user.username)
     update.message.reply_text('Привет! Я буду присылать вам полезные сообщения время от времени')
-
-
-def ping(bot: Bot, update: Update):
-    auto_delete_storage.schedule(update.message.reply_text('pong'))
 
 
 def on_text(bot: Bot, update: Update):
@@ -89,64 +85,8 @@ def on_callback(bot: Bot, update: Update):
                               text_info.confirmation_message_id)
 
 
-def is_admin(bot: Bot, update: Update):
-    if users_storage.is_admin(update.effective_chat.id):
-        reply = 'Вы администратор'
-    else:
-        reply = 'Вы НЕ администратор'
-    auto_delete_storage.schedule(update.message.reply_text(reply))
-
-
-def take_admin(bot: Bot, update: Update):
-    if users_storage.get_admin_chat_ids():
-        auto_delete_storage.schedule(update.message.reply_text('Администраторы уже назначены'))
-        return
-    users_storage.set_is_admin(update.effective_chat.id, True)
-    auto_delete_storage.schedule(update.message.reply_text('Теперь вы администратор'))
-
-
-def drop_admin(bot: Bot, update: Update):
-    users_storage.set_is_admin(update.effective_chat.id, False)
-    auto_delete_storage.schedule(update.message.reply_text('Теперь вы НЕ администратор'))
-
-
-def format_user(user: User) -> str:
-    username = None
-    if user.username is not None:
-        username = '@' + user.username
-    parts = [x for x in [user.first_name, user.last_name, username] if x is not None]
-    if parts:
-        return ' '.join(parts)
-    return f'<#{user.chat_id}>'
-
-
-def list_users(bot: Bot, update: Update):
-    if not users_storage.is_admin(update.effective_chat.id):
-        auto_delete_storage.schedule(update.message.reply_text('Только администратор может видеть список пользователей'))
-        return
-
-    lines = []
-    for no, user in enumerate(users_storage.get_all_users(), 1):
-        lines.append(f'{no}. {format_user(user)}')
-    update.message.reply_text('\n'.join(lines))
-
-def schedule_remove(bot: Bot, update: Update):
-    auto_delete_storage.schedule(update.message)
-
-
 def error(bot, update, error):
     logger.warning('Update "%s" caused error "%s"', update, error)
-
-
-def remove_scheduled(bot: Bot, job: Job):
-    msgs = auto_delete_storage.get_scheduled(25)
-    for msg in msgs:
-        try:
-            bot.delete_message(msg.chat_id, msg.message_id)
-        except BadRequest as e:
-            if e.message not in {'Message to delete not found', "Message can't be deleted"}:
-                raise
-    auto_delete_storage.forget(msgs)
 
 
 def send_tasks(bot: Bot, job: Job):
@@ -160,25 +100,20 @@ def send_tasks(bot: Bot, job: Job):
     send_tasks_storage.dismiss(task.task_id for task in tasks)
 
 
-OBSERVE_FOR_REMOVE = 1
-
 updater = Updater(os.environ['BOT_TOKEN'])
 
 dp = updater.dispatcher
 
 dp.add_handler(CommandHandler('start', start))
-dp.add_handler(CommandHandler('ping', ping))
-dp.add_handler(CommandHandler('is_admin', is_admin))
-dp.add_handler(CommandHandler('take_admin', take_admin))
-dp.add_handler(CommandHandler('drop_admin', drop_admin))
-dp.add_handler(CommandHandler('list_users', list_users))
+dp.add_handler(CommandHandler('ping', create_ping(auto_delete_storage)))
+UsersBehavior(users_storage, auto_delete_storage).install(dp)
 
 dp.add_handler(MessageHandler(Filters.text, on_text))
 dp.add_handler(CallbackQueryHandler(on_callback))
 
-dp.add_handler(MessageHandler(Filters.all, schedule_remove), group=OBSERVE_FOR_REMOVE)
+install_all_inbound_messages_for_delete(dp, auto_delete_storage)
+install_remove_scheduled_job(updater, auto_delete_storage)
 
-updater.job_queue.run_repeating(remove_scheduled, PURGE_INTERVAL)
 updater.job_queue.run_repeating(send_tasks, SEND_TASKS_INTERVAL)
 
 dp.add_error_handler(error)

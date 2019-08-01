@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from typing import List, Iterable
 
-from telegram import Message
+from telegram import Message, Bot
+from telegram.error import BadRequest
+from telegram.ext import Dispatcher, MessageHandler, Filters, Updater
 
 from bots.db import Database
 
@@ -50,3 +52,30 @@ class AutoDeleteStorage:
         with self.db.with_cursor(commit=True) as c:
             c.executemany('DELETE FROM msgs_to_delete WHERE chat_id=? AND message_id=?',
                           [(m.chat_id, m.message_id) for m in msgs])
+
+
+PURGE_INTERVAL = 60
+GROUP__OBSERVE_FOR_REMOVE = 1
+
+
+def remove_scheduled(bot: Bot, auto_delete_storage: AutoDeleteStorage):
+    msgs = auto_delete_storage.get_scheduled(25)
+    for msg in msgs:
+        try:
+            bot.delete_message(msg.chat_id, msg.message_id)
+        except BadRequest as e:
+            if e.message not in {'Message to delete not found', "Message can't be deleted"}:
+                raise
+    auto_delete_storage.forget(msgs)
+
+
+def install_all_inbound_messages_for_delete(dispatcher: Dispatcher, auto_delete_storage: AutoDeleteStorage):
+    dispatcher.add_handler(
+        MessageHandler(Filters.all, lambda bot, update: auto_delete_storage.schedule(update.message)),
+        group=GROUP__OBSERVE_FOR_REMOVE
+    )
+
+
+def install_remove_scheduled_job(updater: Updater, auto_delete_storage: AutoDeleteStorage,
+                                 interval: int = PURGE_INTERVAL):
+    updater.job_queue.run_repeating(lambda bot, job: remove_scheduled(bot, auto_delete_storage), interval)
