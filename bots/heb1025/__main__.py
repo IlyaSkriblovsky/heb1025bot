@@ -106,7 +106,7 @@ dp = updater.dispatcher
 
 dp.add_handler(CommandHandler('start', start))
 dp.add_handler(CommandHandler('ping', create_ping(auto_delete_storage)))
-UsersBehavior(users_storage, auto_delete_storage).install(dp)
+UsersBehavior(users_storage, auto_delete_storage, 2*60*60).install(dp)
 
 dp.add_handler(MessageHandler(Filters.text, on_text))
 dp.add_handler(CallbackQueryHandler(on_callback))

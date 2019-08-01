@@ -5,6 +5,7 @@ from telegram import Message, Bot
 from telegram.error import BadRequest
 from telegram.ext import Dispatcher, MessageHandler, Filters, Updater
 
+from bots.aspects.common import ChatAndMessageId
 from bots.db import Database
 
 
@@ -31,12 +32,15 @@ class AutoDeleteStorage:
 
     # def schedule_message_to_delete(self, msg_to_delete: MessageToDelete, ttl: int):
     def schedule(self, msg: Message, ttl: int = None):
+        self.schedule_by_ids(ChatAndMessageId(msg.chat_id, msg.message_id), ttl=ttl)
+
+    def schedule_by_ids(self, msg: ChatAndMessageId, ttl: int = None):
         if ttl is None:
             ttl = self.default_ttl
 
         with self.db.with_cursor(commit=True) as c:
             date_modifier = f'{ttl} seconds'
-            c.execute('INSERT INTO msgs_to_delete (chat_id, message_id, delete_at) '
+            c.execute('REPLACE INTO msgs_to_delete (chat_id, message_id, delete_at) '
                       'VALUES (?, ?, datetime("now", ?))',
                       (msg.chat_id, msg.message_id, date_modifier))
 

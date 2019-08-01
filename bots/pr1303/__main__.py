@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 db_conn = SerializedDB(sqlite3.connect('./pr1303.sqlite3', check_same_thread=False))
 users_storage = UsersStorage(db_conn)
-auto_delete_storage = AutoDeleteStorage(db_conn, 3) # FIXME 10 * 60)
+auto_delete_storage = AutoDeleteStorage(db_conn, 10 * 60)
 
-ADMIN_MSG_TTL = 10  # 2 * 24 * 60 * 60
+ADMIN_MSG_TTL = 2 * 24 * 60 * 60
 
 
 def start(bot: Bot, update: Update):
@@ -31,13 +31,8 @@ def start(bot: Bot, update: Update):
 
 
 def on_text(bot: Bot, update: Update):
-    # text_to_send = update.effective_message.text
-
-    link = ''
-    if update.effective_user.username:
-        link = f' @{update.effective_user.username}'
-    text_to_send = f'_{update.effective_user.first_name} {update.effective_user.last_name}{link}_' \
-                   f'\n\n{update.message.text}'
+    user_text = update.message.text.replace('`', '')
+    text_to_send = f'✉️ от {update.effective_user.mention_markdown()}\n\n`{user_text}`'
 
     for chat_id in users_storage.get_admin_chat_ids():
         auto_delete_storage.schedule(
@@ -71,7 +66,14 @@ dp = updater.dispatcher
 
 dp.add_handler(CommandHandler('start', start))
 dp.add_handler(CommandHandler('ping', create_ping(auto_delete_storage)))
-UsersBehavior(users_storage, auto_delete_storage).install(dp)
+
+admin_greeting = (
+    'Теперь вы администратор. Сообщения, которые другие пользователи напишут боту, будут попадать к вам.\n'
+    '\n'
+    '*Важно:* Время жизни таких сообщений — двое суток. После этого сообщения будут исчезать даже если вы '
+    'их не успели прочитать.'
+)
+UsersBehavior(users_storage, auto_delete_storage, ADMIN_MSG_TTL, admin_greeting=admin_greeting).install(dp)
 
 dp.add_handler(MessageHandler(Filters.text, on_text))
 dp.add_handler(CallbackQueryHandler(on_callback))
