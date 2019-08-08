@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from typing import Set, List, Iterable, Tuple
+from typing import Set, List, Iterable, Tuple, Optional
 
 from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
 from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
@@ -18,12 +18,19 @@ class User:
     last_name: str
     username: str
     is_admin: bool
+    banned: bool
 
-    def as_markdown_link(self) -> str:
+    def tg_link(self) -> str:
+        return f'tg://user?id={self.chat_id}'
+
+    def full_name(self) -> str:
         full_name = self.first_name
         if self.last_name:
             full_name += ' ' + self.last_name
-        return f'[{escape_markdown(full_name)}](tg://user?id={self.chat_id})'
+        return full_name
+
+    def as_markdown_link(self) -> str:
+        return f'[{escape_markdown(self.full_name())}]({self.tg_link()})'
 
 
 @dataclass
@@ -53,7 +60,8 @@ class UsersStorage:
                     last_name TEXT,
                     username TEXT,
                     start_time TEXT NOT NULL,
-                    is_admin INTEGER
+                    is_admin INTEGER DEFAULT 0,
+                    banned INTEGER DEFAULT 0
                 )
             ''')
             c.execute('''
@@ -74,22 +82,32 @@ class UsersStorage:
 
     def add_user(self, chat_id: int, first_name: str, last_name: str, username: str):
         with self.db.with_cursor(commit=True) as c:
-            c.execute(
-                'INSERT OR REPLACE INTO users (chat_id, first_name, last_name, username, start_time, is_admin) VALUES ('
-                '?, ?, ?, ?, datetime("now"), (SELECT is_admin FROM users WHERE chat_id=?)'
-                ')', (chat_id, first_name, last_name, username, chat_id))
+            c.execute('SELECT chat_id FROM users WHERE chat_id=?', (chat_id,))
+            row = c.fetchone()
+            if row is None:
+                c.execute(
+                    'INSERT INTO users (chat_id, first_name, last_name, username, start_time)'
+                    ' VALUES (?, ?, ?, ?, datetime("now"))',
+                    (chat_id, first_name, last_name, username)
+                )
+            else:
+                c.execute(
+                    'UPDATE users SET first_name=?, last_name=?, username=?'
+                    ' WHERE chat_id=?',
+                    (first_name, last_name, username, chat_id)
+                )
 
     def get_all_chat_ids(self) -> Set[int]:
         with self.db.with_cursor() as c:
-            return {row[0] for row in c.execute('SELECT chat_id FROM users')}
+            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE NOT banned')}
 
     def get_admin_chat_ids(self) -> Set[int]:
         with self.db.with_cursor() as c:
-            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE is_admin')}
+            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE NOT banned AND is_admin')}
 
     def is_admin(self, chat_id: int) -> bool:
         with self.db.with_cursor() as c:
-            c.execute('SELECT is_admin FROM users WHERE chat_id=?', (chat_id,))
+            c.execute('SELECT is_admin FROM users WHERE chat_id=? AND NOT banned', (chat_id,))
             row = c.fetchone()
             if row:
                 return bool(row[0])
@@ -97,22 +115,47 @@ class UsersStorage:
 
     @staticmethod
     def _set_is_admin_with_cursor(cursor, chat_id: int, is_admin: bool):
-        cursor.execute('UPDATE users SET is_admin=? WHERE chat_id=?', (int(is_admin), chat_id))
+        cursor.execute('UPDATE users SET is_admin=? WHERE chat_id=? AND NOT banned', (int(is_admin), chat_id))
 
     def set_is_admin(self, chat_id: int, is_admin: bool):
         with self.db.with_cursor(commit=True) as c:
             return self._set_is_admin_with_cursor(c, chat_id, is_admin)
 
-    def get_all_users(self) -> List[User]:
+    def is_banned(self, chat_id: int) -> bool:
+        with self.db.with_cursor() as c:
+            c.execute('SELECT banned FROM users WHERE chat_id=?', (chat_id,))
+            row = c.fetchone()
+            if row:
+                return bool(row[0])
+            return True
+
+    def set_banned(self, chat_id: int, banned: bool):
+        with self.db.with_cursor(commit=True) as c:
+            c.execute('UPDATE users SET banned=? WHERE chat_id=?', (int(banned), chat_id))
+
+    def get_all_users(self, include_banned=False) -> List[User]:
+        where = 'WHERE NOT banned'
+        if include_banned:
+            where = ''
+
         with self.db.with_cursor() as c:
             return [
-                User(*row[0:4], bool(row[4]))
-                for row in c.execute('''
-                    SELECT chat_id, first_name, last_name, username, is_admin
+                User(*row[0:4], bool(row[4]), bool(row[5]))
+                for row in c.execute(f'''
+                    SELECT chat_id, first_name, last_name, username, is_admin, banned
                     FROM users
+                    {where}
                     ORDER BY start_time
                 ''')
             ]
+
+    def get_user(self, chat_id: int) -> Optional[User]:
+        with self.db.with_cursor() as c:
+            c.execute('SELECT chat_id, first_name, last_name, username, is_admin, banned FROM users WHERE chat_id=?',
+                      (chat_id,))
+            row = c.fetchone()
+            if row:
+                return User(*row[0:4], bool(row[4]), bool(row[5]))
 
     def create_admin_request(self, candidate_chat_id: int, request_text: str) -> AdminRequest:
         with self.db.with_cursor(commit=True) as c:
@@ -168,6 +211,7 @@ class UsersBehavior:
         dispatcher.add_handler(CommandHandler('take_admin', self.take_admin), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('drop_admin', self.drop_admin), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('list_users', self.list_users), group=GROUP__USERS)
+        dispatcher.add_handler(CommandHandler('ban_user', self.ban_user), group=GROUP__USERS)
         dispatcher.add_handler(CallbackQueryHandler(self.on_callback), group=GROUP__USERS)
 
     def is_admin(self, _bot: Bot, update: Update):
@@ -178,6 +222,10 @@ class UsersBehavior:
         self.auto_delete_storage.schedule(update.message.reply_text(reply))
 
     def take_admin(self, bot: Bot, update: Update):
+        if self.users_storage.is_banned(update.effective_chat.id):
+            self.auto_delete_storage.schedule(update.message.reply_text('Вы забанены'))
+            return
+
         existing_admins = self.users_storage.get_admin_chat_ids()
         if not existing_admins:
             self.users_storage.set_is_admin(update.effective_chat.id, True)
@@ -244,6 +292,20 @@ class UsersBehavior:
                 )
                 self.auto_delete_storage.schedule_by_ids(msg)
 
+        elif callback_type == 'update_ban_list':
+            bot.edit_message_text(chat_id=update.effective_chat.id, message_id=update.effective_message.message_id,
+                                  **self._crete_ban_list_message(callback_data['offset']))
+            bot.answer_callback_query(update.callback_query.id)
+
+        if callback_type == 'ban_user':
+            chat_id = callback_data['chat_id']
+            user = self.users_storage.get_user(chat_id)
+            self.users_storage.set_banned(chat_id, True)
+            bot.edit_message_text(f'\U0001f6ab Пользователь {user.as_markdown_link()} забанен',
+                                  parse_mode=ParseMode.MARKDOWN,
+                                  chat_id=update.effective_chat.id, message_id=update.effective_message.message_id)
+            bot.answer_callback_query(update.callback_query.id)
+
     def drop_admin(self, _bot: Bot, update: Update):
         self.users_storage.set_is_admin(update.effective_chat.id, False)
         self.auto_delete_storage.schedule(update.message.reply_text('Теперь вы НЕ администратор'))
@@ -261,3 +323,48 @@ class UsersBehavior:
             suffix = ' \U0001f511' if user.chat_id in admins else ''
             lines.append(f'{no}. {user.as_markdown_link()}{suffix}')
         self.auto_delete_storage.schedule(update.message.reply_text('\n'.join(lines), parse_mode=ParseMode.MARKDOWN))
+
+    def _crete_ban_list_message(self, offset: int):
+        users = self.users_storage.get_all_users()
+        count = 5
+
+        lines = []
+        for no, user in enumerate(users[offset:offset + count], offset + 1):
+            lines.append(f'{no}. {user.as_markdown_link()}')
+
+        def j(data):
+            return json.dumps(data)
+
+        page_buttons = []
+        if offset > 0:
+            page_buttons.append(
+                InlineKeyboardButton('«', callback_data=j({'type': 'update_ban_list', 'offset': offset - count}))
+            )
+        if offset + count < len(users):
+            page_buttons.append(
+                InlineKeyboardButton('»', callback_data=j({'type': 'update_ban_list', 'offset': offset + count}))
+            )
+
+        keyboard = [
+            [
+                InlineKeyboardButton(f'[ {no} ]', callback_data=j({'type': 'ban_user', 'chat_id': user.chat_id}))
+                for no, user in enumerate(users[offset:offset + count], offset + 1)
+            ],
+        ]
+
+        if page_buttons:
+            keyboard.append(page_buttons)
+
+        return {
+            'text': '\n'.join(lines),
+            'parse_mode': ParseMode.MARKDOWN,
+            'reply_markup': InlineKeyboardMarkup(keyboard)
+        }
+
+    def ban_user(self, _bot: Bot, update: Update):
+        if not self.users_storage.is_admin(update.effective_chat.id):
+            self.auto_delete_storage.schedule(
+                update.message.reply_text('Только администратор может блокировать пользователей'))
+            return
+
+        self.auto_delete_storage.schedule(update.message.reply_text(**self._crete_ban_list_message(0)))

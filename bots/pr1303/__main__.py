@@ -32,6 +32,10 @@ def start(bot: Bot, update: Update):
 
 
 def on_text(bot: Bot, update: Update):
+    if users_storage.is_banned(update.effective_chat.id):
+        auto_delete_storage.schedule(update.message.reply_text('Вы забанены'))
+        return
+
     user_text = escape_markdown(update.message.text)
     text_to_send = f'✉️ от {update.effective_user.mention_markdown()}\n\n`{user_text}`'
 
