@@ -330,7 +330,7 @@ class UsersBehavior:
 
     def _crete_ban_list_message(self, offset: int):
         users = self.users_storage.get_all_users()
-        count = 8
+        count = 5
 
         lines = []
         for no, user in enumerate(users[offset:offset + count], offset + 1):
