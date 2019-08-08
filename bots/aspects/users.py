@@ -297,7 +297,11 @@ class UsersBehavior:
                                   **self._crete_ban_list_message(callback_data['offset']))
             bot.answer_callback_query(update.callback_query.id)
 
-        if callback_type == 'ban_user':
+        elif callback_type == 'cancel_ban':
+            bot.edit_message_text('❌ Команда отменена', update.effective_chat.id, update.effective_message.message_id)
+            bot.answer_callback_query(update.callback_query.id)
+
+        elif callback_type == 'ban_user':
             chat_id = callback_data['chat_id']
             user = self.users_storage.get_user(chat_id)
             self.users_storage.set_banned(chat_id, True)
@@ -326,7 +330,7 @@ class UsersBehavior:
 
     def _crete_ban_list_message(self, offset: int):
         users = self.users_storage.get_all_users()
-        count = 5
+        count = 8
 
         lines = []
         for no, user in enumerate(users[offset:offset + count], offset + 1):
@@ -340,6 +344,9 @@ class UsersBehavior:
             page_buttons.append(
                 InlineKeyboardButton('«', callback_data=j({'type': 'update_ban_list', 'offset': offset - count}))
             )
+        page_buttons.append(
+            InlineKeyboardButton('отмена', callback_data=j({'type': 'cancel_ban'}))
+        )
         if offset + count < len(users):
             page_buttons.append(
                 InlineKeyboardButton('»', callback_data=j({'type': 'update_ban_list', 'offset': offset + count}))
@@ -350,13 +357,11 @@ class UsersBehavior:
                 InlineKeyboardButton(f'[ {no} ]', callback_data=j({'type': 'ban_user', 'chat_id': user.chat_id}))
                 for no, user in enumerate(users[offset:offset + count], offset + 1)
             ],
+            page_buttons
         ]
 
-        if page_buttons:
-            keyboard.append(page_buttons)
-
         return {
-            'text': '\n'.join(lines),
+            'text': 'Выберите пользователя для блокировки:\n\n' + '\n'.join(lines),
             'parse_mode': ParseMode.MARKDOWN,
             'reply_markup': InlineKeyboardMarkup(keyboard)
         }
