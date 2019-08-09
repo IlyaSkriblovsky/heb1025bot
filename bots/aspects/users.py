@@ -133,29 +133,32 @@ class UsersStorage:
         with self.db.with_cursor(commit=True) as c:
             c.execute('UPDATE users SET banned=? WHERE chat_id=?', (int(banned), chat_id))
 
-    def get_all_users(self, include_banned=False) -> List[User]:
-        where = 'WHERE NOT banned'
-        if include_banned:
-            where = ''
+    @staticmethod
+    def _get_users(cursor, where: Optional[str], where_args: tuple = ()) -> List[User]:
+        full_where = f'WHERE {where}' if where else ''
+        return [
+            User(*row[:4], bool(row[4]), bool(row[5]))
+            for row in cursor.execute(f'''
+                SELECT chat_id, first_name, last_name, username, is_admin, banned
+                FROM users
+                {full_where}
+                ORDER BY start_time
+            ''', where_args)
+        ]
 
+    def get_all_users(self, include_banned=False) -> List[User]:
         with self.db.with_cursor() as c:
-            return [
-                User(*row[0:4], bool(row[4]), bool(row[5]))
-                for row in c.execute(f'''
-                    SELECT chat_id, first_name, last_name, username, is_admin, banned
-                    FROM users
-                    {where}
-                    ORDER BY start_time
-                ''')
-            ]
+            return self._get_users(c, None if include_banned else 'NOT banned')
+
+    def get_banned_users(self) -> List[User]:
+        with self.db.with_cursor() as c:
+            return self._get_users(c, 'banned')
 
     def get_user(self, chat_id: int) -> Optional[User]:
         with self.db.with_cursor() as c:
-            c.execute('SELECT chat_id, first_name, last_name, username, is_admin, banned FROM users WHERE chat_id=?',
-                      (chat_id,))
-            row = c.fetchone()
-            if row:
-                return User(*row[0:4], bool(row[4]), bool(row[5]))
+            users = self._get_users(c, 'chat_id=?', (chat_id,))
+            if users:
+                return users[0]
 
     def create_admin_request(self, candidate_chat_id: int, request_text: str) -> AdminRequest:
         with self.db.with_cursor(commit=True) as c:
@@ -198,6 +201,10 @@ class UsersStorage:
 GROUP__USERS = 2
 
 
+def j(data):
+    return json.dumps(data)
+
+
 class UsersBehavior:
     def __init__(self, users_storage: UsersStorage, auto_delete_storage: AutoDeleteStorage, admin_requests_ttl: int,
                  admin_greeting: str = 'Теперь вы администратор'):
@@ -211,7 +218,9 @@ class UsersBehavior:
         dispatcher.add_handler(CommandHandler('take_admin', self.take_admin), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('drop_admin', self.drop_admin), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('list_users', self.list_users), group=GROUP__USERS)
-        dispatcher.add_handler(CommandHandler('ban_user', self.ban_user), group=GROUP__USERS)
+        dispatcher.add_handler(CommandHandler('ban_list', self.ban_list), group=GROUP__USERS)
+        dispatcher.add_handler(CommandHandler('ban', self.ban_user, pass_args=True), group=GROUP__USERS)
+        dispatcher.add_handler(CommandHandler('unban', self.unban_user, pass_args=True), group=GROUP__USERS)
         dispatcher.add_handler(CallbackQueryHandler(self.on_callback), group=GROUP__USERS)
 
     def is_admin(self, _bot: Bot, update: Update):
@@ -292,20 +301,17 @@ class UsersBehavior:
                 )
                 self.auto_delete_storage.schedule_by_ids(msg)
 
-        elif callback_type == 'update_ban_list':
-            bot.edit_message_text(chat_id=update.effective_chat.id, message_id=update.effective_message.message_id,
-                                  **self._crete_ban_list_message(callback_data['offset']))
-            bot.answer_callback_query(update.callback_query.id)
-
-        elif callback_type == 'cancel_ban':
+        elif callback_type in {'unban_cancel', 'ban_cancel'}:
             bot.edit_message_text('❌ Команда отменена', update.effective_chat.id, update.effective_message.message_id)
             bot.answer_callback_query(update.callback_query.id)
 
-        elif callback_type == 'ban_user':
+        elif callback_type in {'ban', 'unban'}:
             chat_id = callback_data['chat_id']
             user = self.users_storage.get_user(chat_id)
-            self.users_storage.set_banned(chat_id, True)
-            bot.edit_message_text(f'\U0001f6ab Пользователь {user.as_markdown_link()} забанен',
+            self.users_storage.set_banned(chat_id, callback_type == 'ban')
+            action = 'забанен' if callback_type == 'ban' else 'разбанен'
+            icon = '\U0001f6ab' if callback_type == 'ban' else '\U0001f513'
+            bot.edit_message_text(f'{icon} Пользователь {user.as_markdown_link()} {action}',
                                   parse_mode=ParseMode.MARKDOWN,
                                   chat_id=update.effective_chat.id, message_id=update.effective_message.message_id)
             bot.answer_callback_query(update.callback_query.id)
@@ -314,10 +320,15 @@ class UsersBehavior:
         self.users_storage.set_is_admin(update.effective_chat.id, False)
         self.auto_delete_storage.schedule(update.message.reply_text('Теперь вы НЕ администратор'))
 
+    def _if_not_admin(self, update: Update, msg: str):
+        if self.users_storage.is_admin(update.effective_chat.id):
+            return False
+
+        self.auto_delete_storage.schedule(update.message.reply_text(msg))
+        return True
+
     def list_users(self, _bot: Bot, update: Update):
-        if not self.users_storage.is_admin(update.effective_chat.id):
-            self.auto_delete_storage.schedule(
-                update.message.reply_text('Только администратор может видеть список пользователей'))
+        if self._if_not_admin(update, 'Только администратор может видеть списки пользователей'):
             return
 
         admins = self.users_storage.get_admin_chat_ids()
@@ -326,50 +337,92 @@ class UsersBehavior:
         for no, user in enumerate(self.users_storage.get_all_users(), 1):
             suffix = ' \U0001f511' if user.chat_id in admins else ''
             lines.append(f'{no}. {user.as_markdown_link()}{suffix}')
-        self.auto_delete_storage.schedule(update.message.reply_text('\n'.join(lines), parse_mode=ParseMode.MARKDOWN))
+        self.auto_delete_storage.schedule(update.message.reply_text(
+            'Активные пользователи:\n\n' + '\n'.join(lines), parse_mode=ParseMode.MARKDOWN
+        ))
 
-    def _crete_ban_list_message(self, offset: int):
-        users = self.users_storage.get_all_users()
-        count = 5
-
-        lines = []
-        for no, user in enumerate(users[offset:offset + count], offset + 1):
-            lines.append(f'{no}. {user.as_markdown_link()}')
-
-        def j(data):
-            return json.dumps(data)
-
-        page_buttons = []
-        if offset > 0:
-            page_buttons.append(
-                InlineKeyboardButton('«', callback_data=j({'type': 'update_ban_list', 'offset': offset - count}))
-            )
-        page_buttons.append(
-            InlineKeyboardButton('отмена', callback_data=j({'type': 'cancel_ban'}))
-        )
-        if offset + count < len(users):
-            page_buttons.append(
-                InlineKeyboardButton('»', callback_data=j({'type': 'update_ban_list', 'offset': offset + count}))
-            )
-
-        keyboard = [
-            [
-                InlineKeyboardButton(f'[ {no} ]', callback_data=j({'type': 'ban_user', 'chat_id': user.chat_id}))
-                for no, user in enumerate(users[offset:offset + count], offset + 1)
-            ],
-            page_buttons
-        ]
-
-        return {
-            'text': 'Выберите пользователя для блокировки:\n\n' + '\n'.join(lines),
-            'parse_mode': ParseMode.MARKDOWN,
-            'reply_markup': InlineKeyboardMarkup(keyboard)
-        }
-
-    def ban_user(self, _bot: Bot, update: Update):
-        if not self.users_storage.is_admin(update.effective_chat.id):
-            self.auto_delete_storage.schedule(
-                update.message.reply_text('Только администратор может блокировать пользователей'))
+    def ban_list(self, _bot: Bot, update: Update):
+        if self._if_not_admin(update, 'Только администратор может видеть списки пользователей'):
             return
 
-        self.auto_delete_storage.schedule(update.message.reply_text(**self._crete_ban_list_message(0)))
+        users = self.users_storage.get_banned_users()
+
+        self.auto_delete_storage.schedule(update.message.reply_text(
+            'Заблокированные пользователи:\n\n'
+            + '\n'.join(f'{no}. {user.as_markdown_link()}' for no, user in enumerate(users, 1)),
+            parse_mode=ParseMode.MARKDOWN))
+
+    def ban_user(self, _bot: Bot, update: Update, args: List[str]):
+        if self._if_not_admin(update, 'Только администратор может управлять пользователями'):
+            return
+
+        if not args:
+            self.auto_delete_storage.schedule(update.message.reply_text(
+                'Для блокировки пользователя наберите /list\_users, а затем `/ban N`,'
+                ' где N — номер пользователя в списке',
+                parse_mode=ParseMode.MARKDOWN
+            ))
+            return
+
+        try:
+            number = int(args[0])
+        except ValueError:
+            self.auto_delete_storage.schedule(update.message.reply_text(
+                'Некоректный номер пользователя'
+            ))
+            return
+
+        users = self.users_storage.get_all_users()
+        if not 1 <= number <= len(users):
+            self.auto_delete_storage.schedule(update.message.reply_text(
+                'Некоректный номер пользователя'
+            ))
+            return
+
+        user = users[number - 1]
+        self.auto_delete_storage.schedule(update.message.reply_text(
+            f'❓ Подтвердите блокировку пользователя {user.as_markdown_link()}',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('❌ Отмена', callback_data=j({'type': 'ban_cancel'})),
+                 InlineKeyboardButton('\U0001f6ab Заблокировать', callback_data=j({'type': 'ban', 'chat_id': user.chat_id}))]
+            ])
+        ))
+
+    def unban_user(self, _bot: Bot, update: Update, args: List[str]):
+        if self._if_not_admin(update, 'Только администратор может управлять пользователями'):
+            return
+
+        if not args:
+            self.auto_delete_storage.schedule(update.message.reply_text(
+                'Для разблокировки пользователя наберите /ban\_list, а затем `/unban N`,'
+                ' где N — номер заблокированного пользователя в списке',
+                parse_mode=ParseMode.MARKDOWN
+            ))
+            return
+
+        try:
+            number = int(args[0])
+        except ValueError:
+            self.auto_delete_storage.schedule(update.message.reply_text(
+                'Некоректный номер пользователя'
+            ))
+            return
+
+        banned = self.users_storage.get_banned_users()
+        if not 1 <= number <= len(banned):
+            self.auto_delete_storage.schedule(update.message.reply_text(
+                'Некоректный номер пользователя'
+            ))
+            return
+
+        user = banned[number - 1]
+
+        self.auto_delete_storage.schedule(update.message.reply_text(
+            f'❓ Подтвердите разблокировку пользователя {user.as_markdown_link()}',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('❌ Отмена', callback_data=j({'type': 'unban_cancel'})),
+                 InlineKeyboardButton('\U0001f513 Разблокировать', callback_data=j({'type': 'unban', 'chat_id': user.chat_id}))]
+            ])
+        ))
