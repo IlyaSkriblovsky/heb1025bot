@@ -22,7 +22,7 @@ db_conn = SerializedDB(sqlite3.connect('./pr1303.sqlite3', check_same_thread=Fal
 users_storage = UsersStorage(db_conn)
 auto_delete_storage = AutoDeleteStorage(db_conn, 10 * 60)
 
-ADMIN_MSG_TTL = 2 * 24 * 60 * 60
+ADMIN_MSG_TTL = 47 * 60 * 60
 
 
 def start(bot: Bot, update: Update):
