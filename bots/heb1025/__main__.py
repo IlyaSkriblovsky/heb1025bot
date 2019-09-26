@@ -5,7 +5,7 @@ import os
 import sqlite3
 
 from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Unauthorized
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
 
 from bots.aspects.autodelete import (AutoDeleteStorage, install_all_inbound_messages_for_delete,
@@ -94,8 +94,8 @@ def send_tasks(bot: Bot, job: Job):
     for task in tasks:
         try:
             auto_delete_storage.schedule(bot.send_message(task.chat_id, task.text))
-        except BadRequest as e:
-            logger.exception('Error while sending message')
+        except (BadRequest, Unauthorized) as e:
+            logger.exception(f'Error while sending message to {task.chat_id}')
             pass
     send_tasks_storage.dismiss(task.task_id for task in tasks)
 
