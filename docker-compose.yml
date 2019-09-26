@@ -6,10 +6,22 @@ services:
     command: python -m bots.heb1025
     environment:
       BOT_TOKEN: FILLME FILLME FILLME
+      DB_FILE: /app/heb1025.sqlite3
     restart: unless-stopped
     volumes:
       - ./bots:/app/bots
       - ./heb1025.sqlite3:/app/heb1025.sqlite3
+
+  heb1026:
+    build: docker/bot
+    command: python -m bots.heb1025
+    environment:
+      BOT_TOKEN: FILLME FILLME FILLME
+      DB_FILE: /app/heb1026.sqlite3
+    restart: unless-stopped
+    volumes:
+      - ./bots:/app/bots
+      - ./heb1026.sqlite3:/app/heb1026.sqlite3
 
   pr1303:
     build: docker/bot

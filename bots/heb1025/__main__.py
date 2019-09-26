@@ -22,7 +22,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 logger = logging.getLogger(__name__)
 
-db_conn = SerializedDB(sqlite3.connect('./heb1025.sqlite3', check_same_thread=False))
+db_conn = SerializedDB(sqlite3.connect(os.environ['DB_FILE'], check_same_thread=False))
 auto_delete_storage = AutoDeleteStorage(db_conn, 2 * 60 * 60)
 users_storage = UsersStorage(db_conn)
 send_tasks_storage = SendTasksStorage(db_conn)
