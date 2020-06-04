@@ -7,6 +7,7 @@ import sqlite3
 from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
 from telegram.error import BadRequest, Unauthorized
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Job, CallbackQueryHandler
+from telegram.utils.helpers import escape_markdown
 
 from bots.aspects.autodelete import (AutoDeleteStorage, install_all_inbound_messages_for_delete,
                                      install_remove_scheduled_job)
@@ -46,7 +47,7 @@ def on_text(bot: Bot, update: Update):
     text_id = unconfirmed_texts_storage.save_text(text)
 
     confirmation_message: Message = update.message.reply_text(
-        f'Подтвердите рассылку\n\n_{text}_', parse_mode=ParseMode.MARKDOWN,
+        f'Подтвердите рассылку\n\n{text}',  # parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('❌ Отмена', callback_data=json.dumps({'type': 'cancel', 'text_id': text_id})),
              InlineKeyboardButton('✅ Отправить', callback_data=json.dumps({'type': 'send', 'text_id': text_id}))]
