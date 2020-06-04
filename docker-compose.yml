@@ -45,6 +45,17 @@ services:
       - ./bots:/app/bots
       - ./mt1820_4.sqlite3:/app/mt1820_4.sqlite3
 
+  mt1820_5:
+    build: docker/bot
+    command: python -m bots.heb1025
+    environment:
+      BOT_TOKEN: FILLME FILLME FILLME
+      DB_FILE: /app/mt1820_5.sqlite3
+    restart: unless-stopped
+    volumes:
+      - ./bots:/app/bots
+      - ./mt1820_5.sqlite3:/app/mt1820_5.sqlite3
+
   pr1303:
     build: docker/bot
     command: python -m bots.pr1303
