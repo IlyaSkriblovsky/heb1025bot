@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from typing import Set, List, Iterable, Tuple, Optional
 
-from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
+from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode, Message
 from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
 from telegram.utils.helpers import escape_markdown
 
@@ -19,6 +19,7 @@ class User:
     username: str
     is_admin: bool
     banned: bool
+    active: bool
 
     def tg_link(self) -> str:
         return f'tg://user?id={self.chat_id}'
@@ -48,12 +49,27 @@ class AdminRequestConfirmation:
     message_id: int
 
 
+@dataclass
+class ActivationRequest:
+    id: int
+    candidate_chat_id: int
+    request_text: str
+
+
+@dataclass
+class ActivationConfirmation:
+    id: int
+    request_id: int
+    existing_admin_chat_id: int
+    message_id: int
+
+
 class UsersStorage:
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, *, require_activation: bool):
         self.db = db
 
         with self.db.with_cursor(commit=True) as c:
-            c.execute('''
+            c.execute(f'''
                 CREATE TABLE IF NOT EXISTS users (
                     chat_id INTEGER NOT NULL PRIMARY KEY,
                     first_name TEXT,
@@ -61,7 +77,8 @@ class UsersStorage:
                     username TEXT,
                     start_time TEXT NOT NULL,
                     is_admin INTEGER DEFAULT 0,
-                    banned INTEGER DEFAULT 0
+                    banned INTEGER DEFAULT 0,
+                    active INTEGER DEFAULT {0 if require_activation else 1}
                 )
             ''')
             c.execute('''
@@ -73,6 +90,21 @@ class UsersStorage:
             ''')
             c.execute('''
                 CREATE TABLE IF NOT EXISTS admin_request_confirmations (
+                    id INTEGER PRIMARY KEY,
+                    request_id INTEGER,
+                    existing_admin_chat_id INTEGER,
+                    message_id INTEGER
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS activation_requests (
+                    id INTEGER PRIMARY KEY,
+                    candidate_chat_id INTEGER,
+                    request_text TEXT
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS activation_confirmations (
                     id INTEGER PRIMARY KEY,
                     request_id INTEGER,
                     existing_admin_chat_id INTEGER,
@@ -99,15 +131,35 @@ class UsersStorage:
 
     def get_all_chat_ids(self) -> Set[int]:
         with self.db.with_cursor() as c:
-            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE NOT banned')}
+            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE NOT banned AND active')}
 
     def get_admin_chat_ids(self) -> Set[int]:
         with self.db.with_cursor() as c:
-            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE NOT banned AND is_admin')}
+            return {row[0] for row in c.execute('SELECT chat_id FROM users WHERE NOT banned AND active AND is_admin')}
+
+    def is_active(self, chat_id: int) -> bool:
+        with self.db.with_cursor() as c:
+            c.execute('SELECT active FROM users WHERE chat_id=?', (chat_id,))
+            row = c.fetchone()
+            if row:
+                return bool(row[0])
+            return True
+
+    def set_active(self, chat_id: int, active: bool):
+        with self.db.with_cursor(commit=True) as c:
+            c.execute('UPDATE users SET active=? WHERE chat_id=?', (int(active), chat_id))
+
+    @staticmethod
+    def _reject_activation_for_user(cursor, chat_id: int):
+        cursor.execute('UPDATE users SET is_admin=0, banned=1, active=1 WHERE chat_id=?', (chat_id,))
+
+    @staticmethod
+    def _accept_activation_for_user(cursor, chat_id: int):
+        cursor.execute('UPDATE users SET banned=0, active=1 WHERE chat_id=?', (chat_id,))
 
     def is_admin(self, chat_id: int) -> bool:
         with self.db.with_cursor() as c:
-            c.execute('SELECT is_admin FROM users WHERE chat_id=? AND NOT banned', (chat_id,))
+            c.execute('SELECT is_admin FROM users WHERE chat_id=? AND NOT banned AND active', (chat_id,))
             row = c.fetchone()
             if row:
                 return bool(row[0])
@@ -115,7 +167,8 @@ class UsersStorage:
 
     @staticmethod
     def _set_is_admin_with_cursor(cursor, chat_id: int, is_admin: bool):
-        cursor.execute('UPDATE users SET is_admin=? WHERE chat_id=? AND NOT banned', (int(is_admin), chat_id))
+        cursor.execute('UPDATE users SET is_admin=? WHERE chat_id=? AND NOT banned AND active',
+                       (int(is_admin), chat_id))
 
     def set_is_admin(self, chat_id: int, is_admin: bool):
         with self.db.with_cursor(commit=True) as c:
@@ -137,18 +190,22 @@ class UsersStorage:
     def _get_users(cursor, where: Optional[str], where_args: tuple = ()) -> List[User]:
         full_where = f'WHERE {where}' if where else ''
         return [
-            User(*row[:4], bool(row[4]), bool(row[5]))
+            User(*row[:4], bool(row[4]), bool(row[5]), bool(row[6]))
             for row in cursor.execute(f'''
-                SELECT chat_id, first_name, last_name, username, is_admin, banned
+                SELECT chat_id, first_name, last_name, username, is_admin, banned, active
                 FROM users
                 {full_where}
                 ORDER BY start_time
             ''', where_args)
         ]
 
-    def get_all_users(self, include_banned=False) -> List[User]:
+    def get_active_not_banned_users(self) -> List[User]:
         with self.db.with_cursor() as c:
-            return self._get_users(c, None if include_banned else 'NOT banned')
+            return self._get_users(c, 'NOT banned AND active')
+
+    def get_inactive_users(self) -> List[User]:
+        with self.db.with_cursor() as c:
+            return self._get_users(c, 'NOT active')
 
     def get_banned_users(self) -> List[User]:
         with self.db.with_cursor() as c:
@@ -197,6 +254,45 @@ class UsersStorage:
             self._set_is_admin_with_cursor(c, request.candidate_chat_id, True)
             return request, confirmations
 
+    def create_activation_request(self, candidate_chat_id: int, request_text: str) -> ActivationRequest:
+        with self.db.with_cursor(commit=True) as c:
+            c.execute('INSERT INTO activation_requests (candidate_chat_id, request_text) VALUES (?, ?)',
+                      (candidate_chat_id, request_text))
+            return ActivationRequest(c.lastrowid, candidate_chat_id, request_text)
+
+    def save_activation_request_confirmations(self, request_id: int, confirmations: Iterable[ChatAndMessageId]):
+        with self.db.with_cursor(commit=True) as c:
+            c.executemany(
+                'INSERT INTO activation_confirmations (request_id, existing_admin_chat_id, message_id)'
+                ' VALUES (?, ?, ?)',
+                ((request_id, m.chat_id, m.message_id) for m in confirmations)
+            )
+
+    @staticmethod
+    def _clear_activation_request(cursor, request_id: int) -> Tuple[ActivationRequest, Iterable[ChatAndMessageId]]:
+        cursor.execute('SELECT candidate_chat_id, request_text FROM activation_requests WHERE id=?', (request_id,))
+        candidate_chat_id, request_text = cursor.fetchone()
+        confirmations = [
+            ChatAndMessageId(*row)
+            for row in cursor.execute('SELECT existing_admin_chat_id, message_id FROM activation_confirmations'
+                                      ' WHERE request_id=?', (request_id,))
+        ]
+        cursor.execute('DELETE FROM activation_confirmations WHERE request_id=?', (request_id,))
+        cursor.execute('DELETE FROM activation_requests WHERE id=?', (request_id,))
+        return ActivationRequest(request_id, candidate_chat_id, request_text), confirmations
+
+    def reject_activation_request(self, request_id: int) -> Tuple[ActivationRequest, Iterable[ChatAndMessageId]]:
+        with self.db.with_cursor(commit=True) as c:
+            request, confirmations = self._clear_activation_request(c, request_id)
+            self._reject_activation_for_user(c, request.candidate_chat_id)
+            return request, confirmations
+
+    def accept_activation(self, request_id: int) -> Tuple[ActivationRequest, Iterable[ChatAndMessageId]]:
+        with self.db.with_cursor(commit=True) as c:
+            request, confirmations = self._clear_activation_request(c, request_id)
+            self._accept_activation_for_user(c, request.candidate_chat_id)
+            return request, confirmations
+
 
 GROUP__USERS = 2
 
@@ -218,6 +314,7 @@ class UsersBehavior:
         dispatcher.add_handler(CommandHandler('take_admin', self.take_admin), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('drop_admin', self.drop_admin), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('list_users', self.list_users), group=GROUP__USERS)
+        dispatcher.add_handler(CommandHandler('list_pending', self.list_pending), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('ban_list', self.ban_list), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('ban', self.ban_user, pass_args=True), group=GROUP__USERS)
         dispatcher.add_handler(CommandHandler('unban', self.unban_user, pass_args=True), group=GROUP__USERS)
@@ -231,6 +328,11 @@ class UsersBehavior:
         self.auto_delete_storage.schedule(update.message.reply_text(reply))
 
     def take_admin(self, bot: Bot, update: Update):
+        if not self.users_storage.is_active(update.effective_chat.id):
+            self.auto_delete_storage.schedule(
+                update.message.reply_text('Ваш запрос на активацию бота должен быть одобрен администратором'))
+            return
+
         if self.users_storage.is_banned(update.effective_chat.id):
             self.auto_delete_storage.schedule(update.message.reply_text('Вы забанены'))
             return
@@ -301,6 +403,34 @@ class UsersBehavior:
                 )
                 self.auto_delete_storage.schedule_by_ids(msg)
 
+        elif callback_type == 'reject_activation':
+            bot.answer_callback_query(update.callback_query.id)
+            request_id = callback_data['request_id']
+            request, confirmations = self.users_storage.reject_activation_request(request_id)
+            self.auto_delete_storage.schedule(bot.send_message(request.candidate_chat_id, '❌ Ваша заявка отклонена'))
+            for msg in confirmations:
+                bot.edit_message_text(
+                    request.request_text + f'\n\n❌ Отклонено администратором {update.effective_user.mention_markdown()}',
+                    msg.chat_id, msg.message_id,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                self.auto_delete_storage.schedule_by_ids(msg)
+
+        elif callback_type == 'accept_activation':
+            bot.answer_callback_query(update.callback_query.id)
+            request_id = callback_data['request_id']
+            request, confirmations = self.users_storage.accept_activation(request_id)
+            self.auto_delete_storage.schedule(
+                bot.send_message(request.candidate_chat_id, '✅ Бот активирован', parse_mode=ParseMode.MARKDOWN),
+            )
+            for msg in confirmations:
+                bot.edit_message_text(
+                    request.request_text + f'\n\n✅ Принято администратором {update.effective_user.mention_markdown()}',
+                    msg.chat_id, msg.message_id,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                self.auto_delete_storage.schedule_by_ids(msg)
+
         elif callback_type in {'unban_cancel', 'ban_cancel'}:
             bot.edit_message_text('❌ Команда отменена', update.effective_chat.id, update.effective_message.message_id)
             bot.answer_callback_query(update.callback_query.id)
@@ -334,7 +464,7 @@ class UsersBehavior:
         admins = self.users_storage.get_admin_chat_ids()
 
         lines = []
-        for no, user in enumerate(self.users_storage.get_all_users(), 1):
+        for no, user in enumerate(self.users_storage.get_active_not_banned_users(), 1):
             suffix = ' \U0001f511' if user.chat_id in admins else ''
             lines.append(f'{no}. {user.as_markdown_link()}{suffix}')
         self.auto_delete_storage.schedule(update.message.reply_text(
@@ -372,7 +502,7 @@ class UsersBehavior:
             ))
             return
 
-        users = self.users_storage.get_all_users()
+        users = self.users_storage.get_active_not_banned_users()
         if not 1 <= number <= len(users):
             self.auto_delete_storage.schedule(update.message.reply_text(
                 'Некоректный номер пользователя'
@@ -385,7 +515,8 @@ class UsersBehavior:
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('❌ Отмена', callback_data=j({'type': 'ban_cancel'})),
-                 InlineKeyboardButton('\U0001f6ab Заблокировать', callback_data=j({'type': 'ban', 'chat_id': user.chat_id}))]
+                 InlineKeyboardButton('\U0001f6ab Заблокировать',
+                                      callback_data=j({'type': 'ban', 'chat_id': user.chat_id}))]
             ])
         ))
 
@@ -423,6 +554,65 @@ class UsersBehavior:
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('❌ Отмена', callback_data=j({'type': 'unban_cancel'})),
-                 InlineKeyboardButton('\U0001f513 Разблокировать', callback_data=j({'type': 'unban', 'chat_id': user.chat_id}))]
+                 InlineKeyboardButton('\U0001f513 Разблокировать',
+                                      callback_data=j({'type': 'unban', 'chat_id': user.chat_id}))]
             ])
+        ))
+
+    def ask_for_activation(self, bot: Bot, start_message: Message):
+        if self.users_storage.is_banned(start_message.chat_id):
+            self.auto_delete_storage.schedule(start_message.reply_text('Вы забанены'))
+            return
+
+        if self.users_storage.is_active(start_message.chat_id):
+            return
+
+        existing_admins = self.users_storage.get_admin_chat_ids()
+        if not existing_admins:
+            self.users_storage.set_active(start_message.chat_id, active=True)
+            self.auto_delete_storage.schedule(
+                start_message.reply_text(
+                    'Нет активных администраторов, поэтому ваш запрос на подключение к боту принят автоматически.'
+                    ' Вы можете стать администратором с помощью команды /take_admin'
+                ),
+                ttl=self.admin_requests_ttl
+            )
+            return
+
+        request_text = f'К боту подключился пользователь {start_message.from_user.mention_markdown()}.' \
+                       f' Он не сможет пользоваться ботом пока не будет подтверждён администратором.'
+        request = self.users_storage.create_activation_request(start_message.chat_id, request_text)
+
+        confirmation_msgs = []
+        for chat_id in existing_admins:
+            confirmation_msg = bot.send_message(
+                chat_id, request_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton('❌ Забанить', callback_data=j({
+                        'type': 'reject_activation', 'request_id': request.id})),
+                     InlineKeyboardButton('✅ Принять', callback_data=j({
+                         'type': 'accept_activation', 'request_id': request.id}))]
+                ])
+            )
+            self.auto_delete_storage.schedule(confirmation_msg, ttl=self.admin_requests_ttl)
+            confirmation_msgs.append(ChatAndMessageId(chat_id, confirmation_msg.message_id))
+        self.users_storage.save_activation_request_confirmations(request.id, confirmation_msgs)
+        self.auto_delete_storage.schedule(start_message.reply_text(
+            'Вашу заявку на подключение к боту должен принять кто-то из администраторов'
+        ))
+
+    def list_pending(self, _bot: Bot, update: Update):
+        if self._if_not_admin(update, 'Только администратор может видеть списки пользователей'):
+            return
+
+        lines = []
+        for no, user in enumerate(self.users_storage.get_inactive_users(), 1):
+            lines.append(f'{no}. {user.as_markdown_link()}')
+
+        prefix = 'Неактивированные пользователи:\n\n'
+        suffix = '\n\nЧтобы активировать пользователя, предложите ему заново отправить боту' \
+                 ' команду /start.'
+        self.auto_delete_storage.schedule(update.message.reply_text(
+            prefix + '\n'.join(lines) + suffix, parse_mode=ParseMode.MARKDOWN
         ))

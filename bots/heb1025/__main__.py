@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 db_conn = SerializedDB(sqlite3.connect(os.environ['DB_FILE'], check_same_thread=False))
 auto_delete_storage = AutoDeleteStorage(db_conn, 3 * 60 * 60)
-users_storage = UsersStorage(db_conn)
+users_storage = UsersStorage(db_conn, require_activation=True)
 send_tasks_storage = SendTasksStorage(db_conn)
 unconfirmed_texts_storage = UnconfirmedTextsStorage(db_conn)
 
@@ -36,6 +36,7 @@ def start(bot: Bot, update: Update):
     users_storage.add_user(update.effective_chat.id, update.effective_user.first_name,
                            update.effective_user.last_name, update.effective_user.username)
     update.message.reply_text('Привет! Я буду присылать вам полезные сообщения время от времени')
+    users_behavior.ask_for_activation(bot, update.message)
 
 
 def on_text(bot: Bot, update: Update):
@@ -107,7 +108,8 @@ dp = updater.dispatcher
 
 dp.add_handler(CommandHandler('start', start))
 dp.add_handler(CommandHandler('ping', create_ping(auto_delete_storage)))
-UsersBehavior(users_storage, auto_delete_storage, 2*60*60).install(dp)
+users_behavior = UsersBehavior(users_storage, auto_delete_storage, admin_requests_ttl=3*60*60)
+users_behavior.install(dp)
 
 dp.add_handler(MessageHandler(Filters.text, on_text))
 dp.add_handler(CallbackQueryHandler(on_callback))

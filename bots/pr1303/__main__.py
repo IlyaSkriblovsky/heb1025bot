@@ -13,13 +13,14 @@ from bots.aspects.users import UsersStorage, UsersBehavior
 from bots.db import SerializedDB
 from bots.utils.bot_utils import create_ping
 
+
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
 db_conn = SerializedDB(sqlite3.connect('./pr1303.sqlite3', check_same_thread=False))
-users_storage = UsersStorage(db_conn)
+users_storage = UsersStorage(db_conn, require_activation=False)
 auto_delete_storage = AutoDeleteStorage(db_conn, 10 * 60)
 
 ADMIN_MSG_TTL = 47 * 60 * 60
@@ -32,6 +33,11 @@ def start(bot: Bot, update: Update):
 
 
 def on_text(bot: Bot, update: Update):
+    if not users_storage.is_active(update.effective_chat.id):
+        auto_delete_storage.schedule(
+            update.message.reply_text('Ваш запрос на активацию бота должен быть одобрен администратором'))
+        return
+
     if users_storage.is_banned(update.effective_chat.id):
         auto_delete_storage.schedule(update.message.reply_text('Вы забанены'))
         return

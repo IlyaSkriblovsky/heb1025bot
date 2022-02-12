@@ -12,11 +12,12 @@ class Database(metaclass=ABCMeta):
 
 
 class CursorContext:
-    def __init__(self, lock: RLock, cursor_getter, commit: bool, committer: Callable):
+    def __init__(self, lock: RLock, cursor_getter, commit: bool, committer: Callable, rollbacker: Callable):
         self.lock = lock
         self.cursor_getter = cursor_getter
         self.commit = commit
         self.committer = committer
+        self.rollbacker = rollbacker
 
     def __enter__(self):
         self.lock.acquire()
@@ -26,7 +27,10 @@ class CursorContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cursor.close()
         if self.commit:
-            self.committer()
+            if exc_val is None:
+                self.committer()
+            else:
+                self.rollbacker()
         self.lock.release()
 
 
@@ -37,7 +41,7 @@ class SerializedDB(Database):
         self.db_conn = db_conn
 
     def with_cursor(self, *, commit=False):
-        return CursorContext(self.lock, self.db_conn.cursor, commit, self.db_conn.commit)
+        return CursorContext(self.lock, self.db_conn.cursor, commit, self.db_conn.commit, self.db_conn.rollback)
 
     def commit(self):
         self.lock.acquire()
