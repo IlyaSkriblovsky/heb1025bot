@@ -16,18 +16,22 @@ class SendTasksStorage:
         self.db = db
 
         with self.db.with_cursor(commit=True) as c:
-            c.execute('''
+            c.execute(
+                """
                 CREATE TABLE IF NOT EXISTS send_tasks (
                     id INTEGER PRIMARY KEY,
                     chat_id INTEGER,
                     text TEXT
                 )
-            ''')
+            """
+            )
 
     def save(self, chat_ids: Iterable[int], text: str):
         with self.db.with_cursor(commit=True) as c:
-            c.executemany('INSERT INTO send_tasks (chat_id, text) VALUES (?, ?)',
-                          ((chat_id, text) for chat_id in chat_ids))
+            c.executemany(
+                "INSERT INTO send_tasks (chat_id, text) VALUES (?, ?)",
+                ((chat_id, text) for chat_id in chat_ids),
+            )
 
     # def save_for_all_users(self, text: str) -> int:
     #     with self.db.with_cursor(commit=True) as c:
@@ -36,9 +40,20 @@ class SendTasksStorage:
 
     def load(self, limit: int) -> List[SendTask]:
         with self.db.with_cursor() as c:
-            return [SendTask(*row) for row in
-                    c.execute('SELECT id, chat_id, text FROM send_tasks ORDER BY id LIMIT ?', (limit,))]
+            return [
+                SendTask(*row)
+                for row in c.execute(
+                    "SELECT id, chat_id, text FROM send_tasks ORDER BY id LIMIT ?",
+                    (limit,),
+                )
+            ]
 
     def dismiss(self, ids: Iterable[int]):
         with self.db.with_cursor(commit=True) as c:
-            c.executemany('DELETE FROM send_tasks WHERE id = ?', ((task_id,) for task_id in ids))
+            c.executemany(
+                "DELETE FROM send_tasks WHERE id = ?", ((task_id,) for task_id in ids)
+            )
+
+    def dismiss_all(self):
+        with self.db.with_cursor(commit=True) as c:
+            c.execute("DELETE FROM send_tasks")
